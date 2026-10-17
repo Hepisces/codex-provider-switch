@@ -303,6 +303,11 @@ def main() -> None:
     s.add_argument('--model', help='Optional default model; historical model selections are preserved')
     s.add_argument('--skip-missing', action='store_true', help='Explicitly skip indexed threads whose rollout files are missing')
     s.add_argument('--apply', action='store_true')
+    repair = commands.add_parser('repair-ids', help='Repair foreign persisted-item IDs without deleting messages')
+    scope = repair.add_mutually_exclusive_group(required=True)
+    scope.add_argument('--all', action='store_true')
+    scope.add_argument('--thread', action='append')
+    repair.add_argument('--apply', action='store_true')
     r = commands.add_parser('restore')
     r.add_argument('backup', type=Path)
     args = parser.parse_args()
@@ -310,7 +315,16 @@ def main() -> None:
     if not args.command:
         status(home)
         print('\n切换前请退出所有 Codex 客户端。此程序不会自动退出应用。')
-        choice = input('选择：1 官方 / 2 第三方 / 3 撤销 / Enter 退出：').strip()
+        choice = input('选择：1 官方 / 2 第三方 / 3 撤销 / 4 修复历史 ID 错误 / Enter 退出：').strip()
+        if choice == '4':
+            import history_id_repair
+            threads = input('完整对话 ID，多个用空格分隔；Enter 检查全部本地历史：').split()
+            repair_args = argparse.Namespace(all=not threads, thread=threads, apply=False)
+            history_id_repair.perform(repair_args, home)
+            if input('退出 Codex 后，输入 REPAIR 执行历史 ID 修复：').strip() == 'REPAIR':
+                repair_args.apply = True
+                history_id_repair.perform(repair_args, home)
+            return
         if choice == '3':
             restore(Path(input('粘贴备份目录：').strip()).expanduser().resolve(), home)
             return
@@ -335,6 +349,9 @@ def main() -> None:
         status(home)
     elif args.command == 'switch':
         switch(args, home)
+    elif args.command == 'repair-ids':
+        import history_id_repair
+        history_id_repair.perform(args, home)
     else:
         restore(args.backup.expanduser().resolve(), home)
 

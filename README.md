@@ -86,6 +86,40 @@ chmod +x Codex-Provider-Switch.command
 
 “全部对话”会把本地索引中所有可处理对话统一切换到目标 provider，包含归档。如果需要保留不同对话各自的 provider，使用指定对话模式，或在命令行通过 `--from` 筛选来源。
 
+## 切换后出现 persisted-item lookup 错误
+
+如果旧对话报错：
+
+```text
+Supplied input item IDs require persisted-item lookup that is not supported by rustponsesapi.
+```
+
+这类问题与历史请求中的服务端 item ID 有关。更改 provider 元数据并不会转换旧请求 ID。本项目在 `.command` 启动器中提供独立修复入口，不需要安装 Skill：
+
+1. 完全退出 Codex，重新打开启动器。
+2. 在主菜单选择 `4`（修复历史 ID 错误）。
+3. 输入出错对话的完整 ID，多个用空格分隔；留空可检查全部本地历史。
+4. 查看待修改文件及 ID/引用数量；检查包含所选对话的全部可用分段和 `history_base` 引用的基础历史。
+5. 输入 `REPAIR` 执行，保存提示中的备份目录，再重启 Codex、在原对话重试。
+
+命令行同样支持先预览再执行：
+
+```sh
+./Codex-Provider-Switch.command repair-ids --thread THREAD_ID
+./Codex-Provider-Switch.command repair-ids --thread THREAD_ID --apply
+
+# 检查全部本地原始历史
+./Codex-Provider-Switch.command repair-ids --all
+```
+
+修复将原始 response item 的 `id` 和压缩历史中对应的 `message_id` 引用转为不带下划线前缀的本地 ID。Codex 的请求准备代码会在发送时省略这些本地 ID，从而避免要求新端点查找旧服务端 item。只处理指定结构中的 ID，不修改对话/会话 ID、文本、工具 `call_id`、工具输出或加密内容。
+
+替换严格保持每行和文件的字节长度，保留分页历史的字节偏移。每个源文件完整备份，SQLite 状态及分页历史数据库同时生成快照；这个修复入口不写数据库消息或索引。正常切换与此修复入口互相独立，撤销仍使用菜单 `3`。没有原始 rollout 的对话会明确报告无法检查，保留其 SQLite 历史。
+
+本机模拟端点验证了请求重放中历史 ID 的移除和输入项数量保留，未调用真实模型。跨 provider 的加密内容和模型兼容性仍由目标服务决定，本修复不将模拟请求验证等同于官方端点成功回复。
+
+实现依据：[Codex 请求准备](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs)与 [ResponseItemId 格式](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/response_item_id.rs)。另参考了用户提供的 [repair-codex-history](https://github.com/Swellyhow/repair-codex-history) 的元数据修复和备份思路；此项目继续使用独立 `.command` 入口，没有安装或调用该 Skill。
+
 ## 命令行用法
 
 以下命令在工具文件夹中执行。`switch` 默认只预览，添加 `--apply` 才会写入。
@@ -170,11 +204,11 @@ $CODEX_HOME/provider-switch-backups/日期时间-随机值/
 ## 测试
 
 ```sh
-python3 -m unittest -v test_switcher
+python3 -m unittest -v test_switcher test_history_id_repair
 zsh -n Codex-Provider-Switch.command
 ```
 
-13 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
+19 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
 
 - 预览不修改文件或索引。
 - 切换和撤销恢复原始文件，保留数据库快照。
@@ -189,6 +223,11 @@ zsh -n Codex-Provider-Switch.command
 - 只有分页标记、没有历史登记时拒绝迁移。
 - 旧式历史即使有缓存登记，仍要求会话文件存在。
 - 分页对话切换写入失败时回滚索引，保留消息和备份。
+- 请求 ID 修复保持字节长度、文本、工具关联和加密内容。
+- 压缩历史与 retained-context 引用同步转换。
+- 修复预览不写入，历史链各分段可恢复为原始字节。
+- 修复多文件写入失败时恢复全部文件，不删除对话。
+- session_meta 等非目标记录保持原始字节。
 
 ## 官方文档
 
