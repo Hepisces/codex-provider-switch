@@ -17,7 +17,13 @@ class SwitchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name).resolve()
+        self.home = Path(self.temp.name).resolve() / 'codex-home'
+        self.home.mkdir()
+        self.runtime = Path(self.temp.name).resolve() / 'tool-runtime'
+        self.backups = self.runtime / 'backups'
+        runtime_patch = patch.object(m.runtime_storage, 'ROOT', self.runtime)
+        runtime_patch.start()
+        self.addCleanup(runtime_patch.stop)
         self.cfg = self.home / 'config.toml'
         self.cfg.write_text('# keep comment\nmodel = "same-model"\n[model_providers.vapi]\nname = "VAPI"\n[features]\nother = true\n')
         self.session = self.home / 'session.jsonl'
@@ -40,7 +46,7 @@ class SwitchTests(unittest.TestCase):
         m.switch(self.args(apply=False), self.home)
         self.assertEqual(self.original, (self.cfg.read_bytes(), self.session.read_bytes()))
         self.assertEqual(self.provider(), 'vapi')
-        self.assertFalse((self.home / 'provider-switch-backups').exists())
+        self.assertFalse(self.backups.exists())
 
     @patch.object(m, 'require_offline')
     def test_switch_restore(self, offline) -> None:
@@ -50,11 +56,23 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(body, self.body)
         self.assertEqual(json.loads(first)['payload']['other'], 42)
         self.assertEqual(m.tomllib.loads(self.cfg.read_text())['model'], 'same-model')
-        backup = next((self.home / 'provider-switch-backups').iterdir())
+        backup = next(self.backups.iterdir())
         m.restore(backup, self.home)
         self.assertEqual(self.original, (self.cfg.read_bytes(), self.session.read_bytes()))
         self.assertEqual(self.provider(), 'vapi')
         self.assertTrue((backup / 'state.snapshot.sqlite').is_file())
+
+    @patch.object(m, 'require_offline')
+    def test_runtime_is_outside_codex_home(self, offline) -> None:
+        """Both backup placement and future runtime files belong to the tool."""
+        m.switch(self.args(), self.home)
+        backup = next(self.backups.iterdir())
+        self.assertFalse(backup.is_relative_to(self.home))
+        self.assertFalse((self.home / 'provider-switch-backups').exists())
+        self.assertEqual(self.runtime.stat().st_mode & 0o777, 0o700)
+        relocated = backup.rename(self.runtime / 'relocated-backup')
+        m.restore(relocated, self.home)
+        self.assertEqual(self.provider(), 'vapi')
 
     @patch.object(m, 'require_offline')
     def test_both_directions(self, offline) -> None:
@@ -69,7 +87,7 @@ class SwitchTests(unittest.TestCase):
     @patch.object(m, 'require_offline')
     def test_restore_rejects_later_edits(self, offline) -> None:
         m.switch(self.args(), self.home)
-        backup = next((self.home / 'provider-switch-backups').iterdir())
+        backup = next(self.backups.iterdir())
         self.session.write_bytes(self.session.read_bytes() + b'{}\n')
         with self.assertRaises(RuntimeError):
             m.restore(backup, self.home)
@@ -147,7 +165,7 @@ class SwitchTests(unittest.TestCase):
         m.switch(self.args(), self.home)
         self.assertEqual(self.provider(), 'openai')
         self.assertFalse(self.session.exists())
-        backup = next((self.home / 'provider-switch-backups').iterdir())
+        backup = next(self.backups.iterdir())
         with sqlite3.connect(backup / 'history.snapshot.sqlite') as snapshot:
             self.assertEqual(snapshot.execute('SELECT * FROM thread_items').fetchall(),
                              [('abc', 'preserve every message')])
@@ -203,7 +221,7 @@ class SwitchTests(unittest.TestCase):
                 m.switch(self.args(), self.home)
         self.assertEqual(self.provider(), 'vapi')
         self.assertEqual(history.read_bytes(), before)
-        self.assertTrue(list((self.home / 'provider-switch-backups').glob('*/history.snapshot.sqlite')))
+        self.assertTrue(list(self.backups.glob('*/history.snapshot.sqlite')))
 
     def test_running_client_blocked(self) -> None:
         with patch.object(m.subprocess, 'run', return_value=argparse.Namespace(stdout='123 /Applications/Codex.app/Contents/MacOS/Codex\n')):

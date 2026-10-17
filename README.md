@@ -162,7 +162,7 @@ python3 codex_provider_switch.py switch --help
 每次有实际变更的写入操作都会创建独立备份目录：
 
 ```text
-$CODEX_HOME/provider-switch-backups/日期时间-随机值/
+本仓库/runtime/backups/日期时间-操作类型-随机值/
 ├── state.snapshot.sqlite   # SQLite backup API 生成的完整数据库快照
 ├── history.snapshot.sqlite # 存在分页数据库时，同样保存完整快照
 ├── manifest.json           # 路径、原 provider、文件哈希及操作状态
@@ -171,6 +171,8 @@ $CODEX_HOME/provider-switch-backups/日期时间-随机值/
 └── …
 ```
 
+备份、快照、恢复清单及待写入副本统一位于脚本实际所在仓库的 `runtime/backups/`，与启动时的工作目录或桌面快捷方式位置无关。运行测试及排查的日志放在 `runtime/logs/`，诊断材料放在 `runtime/diagnostics/`。当前启动器仅输出到终端，不额外录制终端日志。整个 `runtime/` 已由 `.gitignore` 排除。备份目录可以整体移动，撤销时传入新的实际路径即可，恢复清单中的备份文件路径相对于该目录解析。
+
 备份目录按当前用户访问权限保存，不会自动清理。配置和会话备份可能含密钥、私人对话与路径，请保留在本机，勿提交仓库或上传公开问题报告。仓库 `.gitignore` 已排除常见配置、对话和备份文件。
 
 执行流程为：检查输入与会话结构 → 检查 Codex 进程 → 生成数据库快照和完整文件备份 → 写入恢复清单 → 在 SQLite 事务中更新索引 → 原子替换文件并校验 → 提交事务。检测到切换写入异常时，会回滚 SQLite 事务，并恢复本次已经替换的文件。恢复材料始终留在备份目录。
@@ -178,7 +180,7 @@ $CODEX_HOME/provider-switch-backups/日期时间-随机值/
 正常完成后如需撤销，在菜单选择 `3`，粘贴某次操作的备份目录；也可以运行：
 
 ```sh
-./Codex-Provider-Switch.command restore ~/.codex/provider-switch-backups/实际备份目录名
+./Codex-Provider-Switch.command restore ./runtime/backups/实际备份目录名
 ```
 
 自动撤销只恢复清单中的文件与对应索引字段，不整库覆盖。若对话或配置在切换后已发生变化，撤销会停止，保留新内容和备份；此时切回另一 provider 可使用正常双向切换流程。如果确实需要合并旧备份与新内容，应先检查两份文件后单独处理。
@@ -208,7 +210,7 @@ python3 -m unittest -v test_switcher test_history_id_repair
 zsh -n Codex-Provider-Switch.command
 ```
 
-19 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
+20 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
 
 - 预览不修改文件或索引。
 - 切换和撤销恢复原始文件，保留数据库快照。
@@ -228,6 +230,7 @@ zsh -n Codex-Provider-Switch.command
 - 修复预览不写入，历史链各分段可恢复为原始字节。
 - 修复多文件写入失败时恢复全部文件，不删除对话。
 - session_meta 等非目标记录保持原始字节。
+- 备份位于工具运行目录中，Codex 数据目录不产生工具备份；移动备份后仍可撤销。
 
 ## 官方文档
 

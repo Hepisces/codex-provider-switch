@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -150,11 +149,7 @@ def perform(args: argparse.Namespace, home: Path) -> None:
     if not changes:
         print('没有需要修复的本地历史 ID。')
         return
-    folder = home / 'provider-switch-backups' / (
-        datetime.now().strftime('%Y%m%d-%H%M%S-') + 'ids-' + os.urandom(3).hex()
-    )
-    folder.mkdir(parents=True, mode=0o700)
-    os.chmod(folder.parent, 0o700)
+    folder = core.runtime_storage.create_backup_folder('ids')
     with core.connect(db) as source, core.sqlite3.connect(folder / 'state.snapshot.sqlite') as dest:
         source.backup(dest)
     os.chmod(folder / 'state.snapshot.sqlite', 0o600)

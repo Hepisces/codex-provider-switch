@@ -59,7 +59,7 @@ class HistoryIdTests(unittest.TestCase):
         self.args.apply = False
         repair.perform(self.args, self.home)
         self.assertEqual(self.source.read_bytes(), original)
-        self.assertFalse((self.home / 'provider-switch-backups').exists())
+        self.assertFalse(self.fixture.backups.exists())
 
     @patch.object(repair.core, 'require_offline')
     def test_lineage_apply_and_restore(self, offline) -> None:
@@ -76,7 +76,7 @@ class HistoryIdTests(unittest.TestCase):
             self.assertEqual(len(path.read_bytes()), len(data))
             self.assertNotEqual(path.read_bytes(), data)
         self.assertEqual(db, self.fixture.db.read_bytes())
-        backup = next((self.home / 'provider-switch-backups').iterdir())
+        backup = next(self.fixture.backups.iterdir())
         repair.core.restore(backup, self.home)
         for path, data in original.items():
             self.assertEqual(path.read_bytes(), data)
@@ -101,7 +101,7 @@ class HistoryIdTests(unittest.TestCase):
                 repair.perform(self.args, self.home)
         for path, data in original.items():
             self.assertEqual(path.read_bytes(), data)
-        self.assertTrue(list((self.home / 'provider-switch-backups').glob('*/manifest.json')))
+        self.assertTrue(list(self.fixture.backups.glob('*/manifest.json')))
 
     def test_other_records_keep_all_bytes(self) -> None:
         """User events and session/thread IDs are outside the repair scope."""

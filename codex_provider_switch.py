@@ -13,8 +13,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
 import tomllib
+
+import runtime_storage
 
 
 def digest(path: Path) -> str:
@@ -232,9 +233,7 @@ def switch(args: argparse.Namespace, home: Path) -> None:
     if not changes and not changed_rows:
         print('已经是目标状态，无需修改。')
         return
-    folder = home / 'provider-switch-backups' / (datetime.now().strftime('%Y%m%d-%H%M%S-') + os.urandom(3).hex())
-    folder.mkdir(parents=True, mode=0o700)
-    os.chmod(folder.parent, 0o700)
+    folder = runtime_storage.create_backup_folder('switch')
     # SQLite backup API includes committed WAL contents; retain the full snapshot.
     with connect(db) as source_db, sqlite3.connect(folder / 'state.snapshot.sqlite') as snapshot:
         source_db.backup(snapshot)

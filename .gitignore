@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 work/
+/runtime/
 *.log
 
 # Never publish local Codex data, credentials, or backups.
