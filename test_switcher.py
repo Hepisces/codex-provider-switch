@@ -122,6 +122,89 @@ class SwitchTests(unittest.TestCase):
             self.assertEqual(con.execute('SELECT id,title FROM threads').fetchall(), [('abc', 'keep title')])
         self.assertTrue(self.session.is_file())
 
+    def create_paginated_history(self, empty: bool = False) -> Path:
+        """Create SQLite history with an absent legacy rollout in a fixture."""
+        self.session.unlink()
+        with sqlite3.connect(self.db) as con:
+            con.execute("ALTER TABLE threads ADD COLUMN history_mode TEXT DEFAULT 'paginated'")
+        history = self.home / 'thread_history_1.sqlite'
+        with sqlite3.connect(history) as con:
+            con.execute('CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY)')
+            con.execute('INSERT INTO thread_history_projection_state VALUES (?)', ('abc',))
+            con.execute('CREATE TABLE thread_items(thread_id TEXT, item_json TEXT)')
+            if not empty:
+                con.execute('INSERT INTO thread_items VALUES (?,?)', ('abc', 'preserve every message'))
+        return history
+
+    @patch.object(m, 'require_offline')
+    def test_paginated_bidirectional_and_restore_preserve_history(self, offline) -> None:
+        """Missing legacy JSONL must not skip a registered paginated thread."""
+        history = self.create_paginated_history()
+        history_bytes = history.read_bytes()
+        args = self.args(apply=False)
+        m.switch(args, self.home)
+        self.assertEqual(self.provider(), 'vapi')
+        m.switch(self.args(), self.home)
+        self.assertEqual(self.provider(), 'openai')
+        self.assertFalse(self.session.exists())
+        backup = next((self.home / 'provider-switch-backups').iterdir())
+        with sqlite3.connect(backup / 'history.snapshot.sqlite') as snapshot:
+            self.assertEqual(snapshot.execute('SELECT * FROM thread_items').fetchall(),
+                             [('abc', 'preserve every message')])
+        m.restore(backup, self.home)
+        self.assertEqual(self.provider(), 'vapi')
+        m.switch(self.args(), self.home)
+        m.switch(self.args('vapi'), self.home)
+        self.assertEqual(self.provider(), 'vapi')
+        self.assertEqual(history.read_bytes(), history_bytes)
+        self.assertFalse(self.session.exists())
+
+    @patch.object(m, 'require_offline')
+    def test_empty_paginated_thread_is_preserved(self, offline) -> None:
+        """A registered thread with no messages is still a valid conversation."""
+        history = self.create_paginated_history(empty=True)
+        before = history.read_bytes()
+        m.switch(self.args(), self.home)
+        self.assertEqual(self.provider(), 'openai')
+        self.assertEqual(history.read_bytes(), before)
+        self.assertFalse(self.session.exists())
+
+    def test_unregistered_paginated_thread_is_not_migrated(self) -> None:
+        """A history-mode flag alone is insufficient evidence of stored history."""
+        history = self.create_paginated_history()
+        with sqlite3.connect(history) as con:
+            con.execute('UPDATE thread_history_projection_state SET thread_id=?', ('different',))
+        with self.assertRaises(RuntimeError):
+            m.switch(self.args(apply=False), self.home)
+        self.assertEqual(self.provider(), 'vapi')
+
+    def test_legacy_missing_file_still_rejected_with_projection(self) -> None:
+        """Legacy threads still need their rollout, even with cached projections."""
+        self.create_paginated_history()
+        with sqlite3.connect(self.db) as con:
+            con.execute("UPDATE threads SET history_mode='legacy'")
+        with self.assertRaises(RuntimeError):
+            m.switch(self.args(apply=False), self.home)
+        self.assertEqual(self.provider(), 'vapi')
+
+    @patch.object(m, 'require_offline')
+    def test_paginated_write_failure_rolls_back_index(self, offline) -> None:
+        """An error after the index update preserves both routing and messages."""
+        history = self.create_paginated_history()
+        before = history.read_bytes()
+        write = m.atomic_write
+        def fail_config(path: Path, data: bytes) -> None:
+            """Inject a failure only in the fixture config write."""
+            if path == self.cfg:
+                raise OSError('injected paginated failure')
+            write(path, data)
+        with patch.object(m, 'atomic_write', side_effect=fail_config):
+            with self.assertRaises(OSError):
+                m.switch(self.args(), self.home)
+        self.assertEqual(self.provider(), 'vapi')
+        self.assertEqual(history.read_bytes(), before)
+        self.assertTrue(list((self.home / 'provider-switch-backups').glob('*/history.snapshot.sqlite')))
+
     def test_running_client_blocked(self) -> None:
         with patch.object(m.subprocess, 'run', return_value=argparse.Namespace(stdout='123 /Applications/Codex.app/Contents/MacOS/Codex\n')):
             with self.assertRaises(RuntimeError):

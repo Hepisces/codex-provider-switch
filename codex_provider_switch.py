@@ -95,8 +95,30 @@ def inspect(home: Path) -> tuple[dict, Path, list[dict]]:
         raise RuntimeError('需要唯一的 state_*.sqlite；检测到 ' + str(len(dbs)))
     with connect(dbs[0]) as con:
         con.row_factory = sqlite3.Row
-        rows = [dict(row) for row in con.execute('SELECT id, model_provider, rollout_path FROM threads')]
+        columns = {row[1] for row in con.execute('PRAGMA table_info(threads)')}
+        history_column = 'history_mode' if 'history_mode' in columns else "'legacy' AS history_mode"
+        rows = [dict(row) for row in con.execute(
+            'SELECT id, model_provider, rollout_path, ' + history_column + ' FROM threads'
+        )]
     return config, dbs[0], rows
+
+
+def paginated_history(db: Path) -> tuple[Path | None, set[str]]:
+    """Find threads registered in the paginated history DB beside the state DB.
+
+    A projection record also represents a valid empty paginated conversation.
+    Read only IDs; never deserialize or modify message content.
+    """
+    candidates = list(db.parent.glob('thread_history_*.sqlite'))
+    if not candidates:
+        return None, set()
+    if len(candidates) != 1:
+        raise RuntimeError('检测到多个分页历史数据库，停止以避免选择错误')
+    with connect(candidates[0]) as con:
+        registered = {row[0] for row in con.execute(
+            'SELECT thread_id FROM thread_history_projection_state'
+        )}
+    return candidates[0], registered
 
 
 def status(home: Path) -> None:
@@ -160,6 +182,8 @@ def switch(args: argparse.Namespace, home: Path) -> None:
     changes: list[tuple[Path, bytes, bool]] = []
     changed_rows = []
     missing = []
+    paginated_only = []
+    history_db, registered = paginated_history(db) if selected else (None, set())
     cfg = home / 'config.toml'
     new_config = config_bytes(cfg, target, args.model)
     if cfg.read_bytes() != new_config:
@@ -172,7 +196,12 @@ def switch(args: argparse.Namespace, home: Path) -> None:
         if not path.is_relative_to(home):
             raise RuntimeError('会话文件位于 Codex 目录外，需人工检查：' + str(path))
         if not path.is_file():
-            missing.append(row['id'])
+            if row['history_mode'] == 'paginated' and row['id'] in registered:
+                paginated_only.append(row['id'])
+                if row['model_provider'] != target:
+                    changed_rows.append(row)
+            else:
+                missing.append(row['id'])
             continue
         with path.open('rb') as stream:
             first = stream.readline()
@@ -187,12 +216,14 @@ def switch(args: argparse.Namespace, home: Path) -> None:
             changes.append((path, json.dumps(meta, ensure_ascii=False, separators=(',', ':')).encode() + b'\n', True))
         if row['model_provider'] != target:
             changed_rows.append(row)
+    if paginated_only:
+        print(f'分页历史数据库中确认 {len(paginated_only)} 个无旧 JSONL 的对话；按索引切换，保留全部历史内容。')
     if missing:
         print('会话文件缺失的对话 ID：' + ', '.join(missing))
         if not args.skip_missing:
             raise RuntimeError('存在缺失文件；未修改任何内容。可加 --skip-missing 显式跳过这些对话')
         print(f'显式跳过 {len(missing)} 个缺失文件的对话，其索引保持原值。')
-    print(f'目标 provider: {target}；匹配对话: {len(selected)}；索引修改: {len(changed_rows)}；文件修改: {len(changes)}')
+    print(f'目标 provider: {target}；匹配对话: {len(selected)}；可处理: {len(selected) - len(missing)}；跳过: {len(missing)}；索引修改: {len(changed_rows)}；文件修改: {len(changes)}')
     print('范围:', '全部对话' if args.all else ('指定对话' if args.thread else '仅默认配置'))
     if not args.apply:
         print('预览完成，未修改。加 --apply 执行。')
@@ -208,7 +239,12 @@ def switch(args: argparse.Namespace, home: Path) -> None:
     with connect(db) as source_db, sqlite3.connect(folder / 'state.snapshot.sqlite') as snapshot:
         source_db.backup(snapshot)
     os.chmod(folder / 'state.snapshot.sqlite', 0o600)
-    manifest = {'home': str(home), 'db': str(db), 'target': target, 'state': 'prepared', 'rows': changed_rows, 'files': []}
+    if history_db is not None:
+        with connect(history_db) as source_history, sqlite3.connect(folder / 'history.snapshot.sqlite') as snapshot:
+            source_history.backup(snapshot)
+        os.chmod(folder / 'history.snapshot.sqlite', 0o600)
+    manifest = {'home': str(home), 'db': str(db), 'target': target, 'state': 'prepared', 'rows': changed_rows, 'files': [],
+                'paginated_only': paginated_only}
     # Prepare complete backups and new files before changing any original.
     for i, (path, new_data, header_only) in enumerate(changes):
         backup = folder / f'{i}.original'

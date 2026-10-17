@@ -6,7 +6,7 @@
 
 ## 为什么需要这个工具
 
-Codex 本地配置的默认 provider 与历史对话保存的 provider 是两处状态。更改默认配置后，历史对话的会话文件和 SQLite 索引仍可能保留创建时的 provider。
+Codex 本地配置的默认 provider 与历史对话保存的 provider 是两处状态。更改默认配置后，历史对话的会话文件和 SQLite 索引仍可能保留创建时的 provider。分页历史对话可能直接保存在 `thread_history_*.sqlite`，其旧 JSONL 路径可以不存在。
 
 本工具同步调整三个位置：
 
@@ -15,6 +15,8 @@ Codex 本地配置的默认 provider 与历史对话保存的 provider 是两处
 | `$CODEX_HOME/config.toml` | 顶层 `model_provider`；可选修改默认 `model` |
 | 所选对话 JSONL 的首条 `session_meta` | `payload.model_provider` |
 | 本地 `state_*.sqlite` 的 `threads` 表 | 所选记录的 `model_provider` |
+
+对于 `history_mode = "paginated"`、且在分页数据库的 `thread_history_projection_state` 中已登记的对话，旧 JSONL 不存在时仍可切换：只更新 `threads.model_provider`，不创建旧 JSONL，不修改分页消息数据；空对话也保留。未确认分页登记的缺失文件仍按严格检查处理。
 
 对话 ID、标题和首条记录以后的消息正文保留。首条元数据记录会重新序列化，其他字段值保留。工具不修改登录令牌、第三方密钥或 `auth.json`。
 
@@ -55,7 +57,7 @@ chmod +x Codex-Provider-Switch.command
 3. 双击 `Codex-Provider-Switch.command`，在主菜单输入 `1` 并回车，选择官方 `openai`。
 4. 选择范围：输入 `1` 处理全部索引对话，输入 `2` 后填写完整对话 ID，或输入 `3` 只更改默认配置。指定对话也会同时更新默认 provider。
 5. 回答是否跳过会话文件缺失的记录。只有输入 `y` 才会跳过；其他输入保持严格检查。跳过时对应的索引记录仍然保留，provider 保持原值。
-6. 查看预览中的目标 provider、匹配对话数、待修改索引数和文件数。匹配数包含可能被跳过的记录；缺失记录会单独列出。
+6. 查看预览中的目标 provider、匹配数、可处理数、跳过数、待修改索引数和文件数。已确认分页历史的对话会单独计数，不因旧 JSONL 缺失被跳过；真正无法确认的记录会列出 ID。
 7. 输入大写 `SWITCH` 执行。未输入此字符串不会写入。程序会再次检查 Codex 是否退出，然后准备备份、更新文件与索引。
 8. 保存完成提示中的备份目录，重新打开 Codex，进入原有对话继续使用。
 9. 检查对应对话能否正常回复，以及官方用量页面是否体现预期使用。若模型不可用，在 Codex 中选择该 provider 支持的模型。
@@ -128,6 +130,7 @@ python3 codex_provider_switch.py switch --help
 ```text
 $CODEX_HOME/provider-switch-backups/日期时间-随机值/
 ├── state.snapshot.sqlite   # SQLite backup API 生成的完整数据库快照
+├── history.snapshot.sqlite # 存在分页数据库时，同样保存完整快照
 ├── manifest.json           # 路径、原 provider、文件哈希及操作状态
 ├── 0.original              # 某个待修改文件的完整原内容
 ├── 0.new                   # 对应的准备写入内容
@@ -153,7 +156,7 @@ $CODEX_HOME/provider-switch-backups/日期时间-随机值/
 | 提示或现象 | 含义与处理 |
 | --- | --- |
 | 仍检测到 Codex 进程 | 退出桌面版、CLI 和编辑器扩展中的 Codex，再运行写入操作 |
-| 会话文件缺失 | 索引指向的文件当前不存在；默认停止，也可显式跳过，索引记录保留 |
+| 会话文件缺失 | 旧 JSONL 不存在且无法确认分页历史登记；默认停止，也可显式跳过，索引记录保留 |
 | 未知 provider | 输入的 ID 未在 `[model_providers.<id>]` 中配置 |
 | 启用了 profile | 当前工具拒绝自动处理，需先核对 profile 后再操作 |
 | 官方地址覆盖项 | 检测到 `openai_base_url` 或 `chatgpt_base_url`，先确认目标地址 |
@@ -171,7 +174,7 @@ python3 -m unittest -v test_switcher
 zsh -n Codex-Provider-Switch.command
 ```
 
-8 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
+13 项测试全部使用临时目录中的模拟数据，不写入真实 `~/.codex`：
 
 - 预览不修改文件或索引。
 - 切换和撤销恢复原始文件，保留数据库快照。
@@ -181,6 +184,11 @@ zsh -n Codex-Provider-Switch.command
 - 正向写入失败回滚。
 - 反向写入失败回滚并保留对话。
 - 检测到运行中的 Codex 时拒绝写入。
+- 分页历史没有旧 JSONL 时，支持预览、双向切换与撤销，消息数据库字节不变。
+- 已登记的空分页对话仍可切换且保留。
+- 只有分页标记、没有历史登记时拒绝迁移。
+- 旧式历史即使有缓存登记，仍要求会话文件存在。
+- 分页对话切换写入失败时回滚索引，保留消息和备份。
 
 ## 官方文档
 
