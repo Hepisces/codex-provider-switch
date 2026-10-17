@@ -1,0 +1,21 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+work/
+*.log
+
+# Never publish local Codex data, credentials, or backups.
+.codex/
+provider-switch-backups/
+auth.json
+config.toml
+*.config.toml
+.env
+.env.*
+*.jsonl
+*.sqlite
+*.sqlite-*
+*.original
+*.new
+manifest.json
